@@ -1716,6 +1716,7 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
         this.addSettingTab(new FactotumSettingTab(this.app, this));
         this.beeminderTimer = null;
         this.reviewTimers = {};
+        this.syncSettling = null;
         this.setupScrollOff();
         this.app.workspace.onLayoutReady(() => {
             this.maybeCatchUpBeeminder();
@@ -2091,6 +2092,55 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
         for (const kind of Object.keys(REVIEW_KINDS)) this.clearReviewTimer(kind);
     }
 
+    // A review generated on another device may still be syncing down when this
+    // device opens (or wakes and fires its pending timers), and generating
+    // before it lands writes a duplicate. Resolves once the vault looks
+    // settled: no vault file event for a quiet window, and — when the official
+    // Obsidian Sync plugin is enabled — it no longer reports activity. Vault
+    // quiet also covers external sync tools (Syncthing, iCloud, git), whose
+    // downloads surface as vault events. Capped so an offline device still
+    // reviews eventually. Concurrent callers (the per-kind catch-ups on open)
+    // share one wait.
+    waitForSyncSettled() {
+        if (this.syncSettling) return this.syncSettling;
+        const QUIET_MS = 10 * 1000;
+        const MAX_WAIT_MS = 3 * 60 * 1000;
+        this.syncSettling = new Promise((resolve) => {
+            let quietTimer = null;
+            let capTimer = null;
+            const refs = ['create', 'modify', 'delete', 'rename']
+                .map(ev => this.app.vault.on(ev, () => armQuiet()));
+            refs.forEach(r => this.registerEvent(r));
+            const finish = () => {
+                window.clearTimeout(quietTimer);
+                window.clearTimeout(capTimer);
+                refs.forEach(r => this.app.vault.offref(r));
+                this.syncSettling = null;
+                resolve();
+            };
+            // Sync's status API is undocumented internals — read defensively;
+            // no readable signal just means it can't hold up the wait.
+            const syncBusy = () => {
+                try {
+                    const p = this.app.internalPlugins?.plugins?.sync;
+                    if (!p?.enabled || !p.instance) return false;
+                    const status = p.instance.getStatus?.() ?? p.instance.syncStatus;
+                    return typeof status === 'string' && status !== '' &&
+                        status !== 'Fully synced' && status !== 'Paused';
+                } catch (e) {
+                    return false;
+                }
+            };
+            const armQuiet = () => {
+                window.clearTimeout(quietTimer);
+                quietTimer = window.setTimeout(() => syncBusy() ? armQuiet() : finish(), QUIET_MS);
+            };
+            capTimer = window.setTimeout(finish, MAX_WAIT_MS);
+            armQuiet();
+        });
+        return this.syncSettling;
+    }
+
     // The instant the current period closes: the first day of the next one at
     // 00:00 (Monday for weeks; the 1st for months, quarters, and years).
     // Reviewing at the start of the new period captures everything written late
@@ -2239,6 +2289,14 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
         const k = REVIEW_KINDS[kind];
         const s = this.settings[k.settingsKey];
         if (!s.enabled) return;
+        // Automatic runs (scheduled and catch-up) hold off until sync has
+        // settled, so a review already written on another device can land
+        // before the exists-check below looks for it. Manual runs are the
+        // user asking for a review right now — no wait.
+        if (!notify) {
+            await this.waitForSyncSettled();
+            if (!s.enabled) return; // may have been toggled off during the wait
+        }
         if (!this.settings.anthropic.apiKey) {
             if (notify) new obsidian.Notice(`Factotum: the ${k.adjLabel} review needs an Anthropic API key.`);
             return;
