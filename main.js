@@ -1459,6 +1459,7 @@ const DEFAULT_SETTINGS = {
         folder: 'Yearly Reviews',
         headerEmbed: '![[goals#goals]]', // its section text is copied in above the summary; blank to omit
         goalsSource: '![[goals#goals]]', // section read so Claude can pose a review question per goal; blank to omit
+        questionsSource: '',       // note whose questions are copied in as their own section, headed by the note's title; blank to omit
         lastReviewYearstamp: '',   // YYYY of the last created review
     },
     decadeReview: {
@@ -1466,6 +1467,7 @@ const DEFAULT_SETTINGS = {
         folder: 'Decade Reviews',
         headerEmbed: '![[goals#goals]]', // its section text is copied in above the summary; blank to omit
         goalsSource: '![[goals#goals]]', // section read so Claude can pose a review question per goal; blank to omit
+        questionsSource: '',       // note whose questions are copied in as their own section, headed by the note's title; blank to omit
         lastReviewDecadestamp: '', // e.g. "2020s" of the last created review
     },
     centuryReview: {
@@ -1593,18 +1595,18 @@ async function readEmbeddedSection(app, embed) {
     return heading ? extractSection(content, heading) : stripFrontmatter(content).trim();
 }
 
-// Heading used when a header embed's text is copied into a review note: the
-// linked section name (or file name), capitalized — "Goals" for
+// Heading used when a linked note/section's text is copied into a review
+// note: the linked section name (or file name), capitalized — "Goals" for
 // ![[goals#goals]].
-function embedHeadingLabel(embed) {
+function embedHeadingLabel(embed, fallback = 'Goals') {
     const m = (embed || '').match(/\[\[([^\]]+)\]\]/);
-    if (!m) return 'Goals';
+    if (!m) return fallback;
     const target = m[1].split('|')[0];
     const hashIdx = target.indexOf('#');
     const name = (hashIdx >= 0
         ? target.slice(hashIdx + 1).replace(/^#+/, '')
         : target.split('/').pop().replace(/\.md$/, '')).trim();
-    return name ? name[0].toUpperCase() + name.slice(1) : 'Goals';
+    return name ? name[0].toUpperCase() + name.slice(1) : fallback;
 }
 
 // Start of the period containing `m`. Kinds with `yearsSpan` (decade/century)
@@ -2384,7 +2386,19 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
                 ? `## ${embedHeadingLabel(s.headerEmbed)}\n\n${headerText}\n\n`
                 : `${s.headerEmbed}\n\n`;
         }
-        const note = `---\n${kind}: ${stamp}\nrange: ${range}\nsource: ${sourceLabel}\ngenerated: ${generated}\n---\n\n# ${k.title} — ${stamp}\n\n${embed}${reviewBody}\n`;
+        // A configured question list is the user's standing questions, not
+        // Claude's — copied in verbatim as its own section, headed by the
+        // linked note's title, after the generated review.
+        let questionsSection = '';
+        if (s.questionsSource) {
+            const questionsText = await readEmbeddedSection(this.app, s.questionsSource);
+            if (questionsText) {
+                questionsSection = `\n\n## ${embedHeadingLabel(s.questionsSource, 'Questions')}\n\n${questionsText}`;
+            } else {
+                new obsidian.Notice(`Factotum: question list ${s.questionsSource} not found or empty; section omitted.`);
+            }
+        }
+        const note = `---\n${kind}: ${stamp}\nrange: ${range}\nsource: ${sourceLabel}\ngenerated: ${generated}\n---\n\n# ${k.title} — ${stamp}\n\n${embed}${reviewBody}${questionsSection}\n`;
 
         try {
             const file = await this.writeReviewNote(s.folder, stamp, note);
@@ -2619,6 +2633,18 @@ class FactotumSettingTab extends obsidian.PluginSettingTab {
                     .setPlaceholder('![[goals#goals]]')
                     .setValue(s.goalsSource)
                     .onChange(async (v) => { s.goalsSource = v.trim(); await this.plugin.saveSettings(); }));
+
+            // Only kinds whose defaults declare a question list (year, decade)
+            // offer one.
+            if ('questionsSource' in DEFAULT_SETTINGS[k.settingsKey]) {
+                new obsidian.Setting(containerEl)
+                    .setName('Question list (optional)')
+                    .setDesc('A wiki link like [[Annual Questions]] to a note of questions. Its text is copied to the bottom of every review as its own section, headed by the note\'s title. Leave blank to omit.')
+                    .addText(t => t
+                        .setPlaceholder('[[Annual Questions]]')
+                        .setValue(s.questionsSource)
+                        .onChange(async (v) => { s.questionsSource = v.trim(); await this.plugin.saveSettings(); }));
+            }
 
             new obsidian.Setting(containerEl)
                 .setName(`Generate this ${k.noun}'s review now`)
