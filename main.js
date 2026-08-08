@@ -463,11 +463,11 @@ class RankSessionModal extends obsidian.Modal {
         }
         for (this.entryIdx = 0; this.entryIdx < this.entries.length; this.entryIdx++) {
             const { item } = this.entries[this.entryIdx];
-            const urgent = await this.askClassify(item, 'Is this urgent?',
-                'Urgent things have a hard deadline or consequence if delayed.',
+            const urgent = await this.askClassify(item, 'Must it get done this week?',
+                'If so, it\'s urgent.',
                 'Yes, urgent', 'No, not urgent');
-            const important = await this.askClassify(item, 'Is this important?',
-                'Important things move you toward your goals or values.',
+            const important = await this.askClassify(item, 'If you never did it, would you die?',
+                'If so, it\'s important.',
                 'Yes, important', 'No, not important');
             out[findQuadrant(urgent, important).key].push(item);
         }
@@ -765,9 +765,9 @@ class AddItemModal extends obsidian.Modal {
         const { contentEl } = this;
         contentEl.empty();
         contentEl.createDiv({ cls: 'ordinal-quadrant-label', text: `"${this.newItem.text}"` });
-        contentEl.createEl('h2', { text: 'Is this urgent?' });
+        contentEl.createEl('h2', { text: 'Must it get done this week?' });
         contentEl.createEl('p', {
-            text: 'Urgent things have a hard deadline or consequence if delayed.',
+            text: 'If so, it\'s urgent.',
             cls: 'ordinal-hint'
         });
         closeHint(contentEl, 'Close anytime — the item is captured in the Inbox.');
@@ -784,9 +784,9 @@ class AddItemModal extends obsidian.Modal {
         const { contentEl } = this;
         contentEl.empty();
         contentEl.createDiv({ cls: 'ordinal-quadrant-label', text: `"${this.newItem.text}"` });
-        contentEl.createEl('h2', { text: 'Is this important?' });
+        contentEl.createEl('h2', { text: 'If you never did it, would you die?' });
         contentEl.createEl('p', {
-            text: 'Important things move you toward your goals or values.',
+            text: 'If so, it\'s important.',
             cls: 'ordinal-hint'
         });
         closeHint(contentEl, 'Close anytime — the item is captured in the Inbox.');
@@ -985,7 +985,7 @@ class TriageInboxModal extends obsidian.Modal {
         this.decisionCount++;
         contentEl.createDiv({ cls: 'ordinal-quadrant-label', text: this.progressLabel() });
         contentEl.createEl('h2', { text: item.text });
-        contentEl.createEl('p', { text: 'Is this urgent?', cls: 'ordinal-hint' });
+        contentEl.createEl('p', { text: 'Must it get done this week?', cls: 'ordinal-hint' });
         this.renderProgress(contentEl);
 
         const grid = contentEl.createDiv({ cls: 'ordinal-grid' });
@@ -1005,7 +1005,7 @@ class TriageInboxModal extends obsidian.Modal {
         this.decisionCount++;
         contentEl.createDiv({ cls: 'ordinal-quadrant-label', text: this.progressLabel() });
         contentEl.createEl('h2', { text: item.text });
-        contentEl.createEl('p', { text: 'Is this important?', cls: 'ordinal-hint' });
+        contentEl.createEl('p', { text: 'If you never did it, would you die?', cls: 'ordinal-hint' });
         this.renderProgress(contentEl);
 
         const grid = contentEl.createDiv({ cls: 'ordinal-grid' });
@@ -1166,7 +1166,7 @@ class ConvertModal extends obsidian.Modal {
         contentEl.empty();
         contentEl.createDiv({ cls: 'ordinal-quadrant-label', text: `Item ${this.idx + 1} of ${this.items.length}` });
         contentEl.createEl('h2', { text: item.text });
-        contentEl.createEl('p', { text: 'Is this urgent?', cls: 'ordinal-hint' });
+        contentEl.createEl('p', { text: 'Must it get done this week?', cls: 'ordinal-hint' });
 
         const grid = contentEl.createDiv({ cls: 'ordinal-grid' });
         const yes = grid.createEl('button', { text: 'Yes, urgent', cls: 'ordinal-choice' });
@@ -1184,7 +1184,7 @@ class ConvertModal extends obsidian.Modal {
         contentEl.empty();
         contentEl.createDiv({ cls: 'ordinal-quadrant-label', text: `Item ${this.idx + 1} of ${this.items.length}` });
         contentEl.createEl('h2', { text: item.text });
-        contentEl.createEl('p', { text: 'Is this important?', cls: 'ordinal-hint' });
+        contentEl.createEl('p', { text: 'If you never did it, would you die?', cls: 'ordinal-hint' });
 
         const grid = contentEl.createDiv({ cls: 'ordinal-grid' });
         const yes = grid.createEl('button', { text: 'Yes, important', cls: 'ordinal-choice' });
