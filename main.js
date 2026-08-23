@@ -1751,6 +1751,10 @@ class ReflectionFeedView extends obsidian.ItemView {
         this.loading = false;
         this.generation = 0;       // bumped on restart so an in-flight load drops its stale cards
         this.navigation = false;
+        // Created here, not in onOpen: Obsidian pushes view.scope when the leaf
+        // becomes active, which can precede onOpen.
+        this.scope = new obsidian.Scope(this.app.scope);
+        this.setupVimKeys();
     }
 
     getViewType()    { return REFLECTION_FEED_VIEW; }
@@ -1789,6 +1793,81 @@ class ReflectionFeedView extends obsidian.ItemView {
         });
 
         await this.restart();
+    }
+
+    // Vim-style navigation, active whenever the feed is the focused pane (the
+    // view's Scope is pushed by Obsidian's keymap, so no element needs focus).
+    //   j / k          scroll a few lines          J / K   snap to next / previous card
+    //   d / u, ^d / ^u half a page                 gg / G  top / last loaded card
+    //   o / Enter      open the card in view       r       reshuffle
+    setupVimKeys() {
+        const root = this.contentEl;
+        const bind = (mods, key, fn) => this.scope.register(mods, key, (evt) => { fn(evt); return false; });
+        const scrollBy = (dy, smooth) => root.scrollBy({ top: dy, behavior: smooth ? 'smooth' : 'auto' });
+        const lineStep = () => Math.max(40, Math.round(parseFloat(getComputedStyle(root).lineHeight) || 24) * 3);
+        const halfPage = () => Math.max(100, Math.floor(root.clientHeight / 2));
+
+        bind([], 'j', () => scrollBy( lineStep(), false));
+        bind([], 'k', () => scrollBy(-lineStep(), false));
+        for (const mods of [[], ['Ctrl']]) {
+            bind(mods, 'd', () => scrollBy( halfPage(), true));
+            bind(mods, 'u', () => scrollBy(-halfPage(), true));
+        }
+        bind(['Shift'], 'j', () => this.snapToCard(+1));
+        bind(['Shift'], 'k', () => this.snapToCard(-1));
+        bind(['Shift'], 'g', () => root.scrollTo({ top: root.scrollHeight, behavior: 'smooth' }));
+        bind([], 'o',     () => this.openCardInView());
+        bind([], 'Enter', () => this.openCardInView());
+        bind([], 'r',     () => this.restart());
+
+        // gg: two g's within a second jump to the top.
+        let lastG = 0;
+        bind([], 'g', () => {
+            const now = Date.now();
+            if (now - lastG < 1000) { root.scrollTo({ top: 0, behavior: 'smooth' }); lastG = 0; }
+            else lastG = now;
+        });
+    }
+
+    cards() {
+        return Array.from(this.cardsEl.children);
+    }
+
+    // The card whose top is nearest the top of the viewport — what the eye is on.
+    cardInView() {
+        const rootTop = this.contentEl.getBoundingClientRect().top;
+        let best = null, bestDist = Infinity;
+        for (const card of this.cards()) {
+            const r = card.getBoundingClientRect();
+            if (r.bottom <= rootTop + 8) continue;          // scrolled past
+            const dist = Math.abs(r.top - rootTop);
+            if (dist < bestDist) { best = card; bestDist = dist; }
+        }
+        return best;
+    }
+
+    snapToCard(dir) {
+        const cards = this.cards();
+        if (cards.length === 0) return;
+        const root = this.contentEl;
+        const rootTop = root.getBoundingClientRect().top;
+        const cardTop = (c) => c.getBoundingClientRect().top - rootTop;   // relative to viewport top
+        let target;
+        if (dir > 0) target = cards.find(c => cardTop(c) > 12);
+        else         target = [...cards].reverse().find(c => cardTop(c) < -12);
+        if (!target) {
+            if (dir > 0) this.loadMore();
+            else root.scrollTo({ top: 0, behavior: 'smooth' });
+            return;
+        }
+        root.scrollTo({ top: root.scrollTop + cardTop(target) - 8, behavior: 'smooth' });
+    }
+
+    openCardInView() {
+        const card = this.cardInView();
+        if (!card) return;
+        const file = this.app.vault.getAbstractFileByPath(card.dataset.path);
+        if (file instanceof obsidian.TFile) this.app.workspace.getLeaf('tab').openFile(file);
     }
 
     async onClose() {

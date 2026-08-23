@@ -118,6 +118,8 @@ Opens a tab that's an endless, read-only scroll of random notes from your vault 
 
 Notes are dealt from a shuffled deck, so nothing repeats until every note has been shown once — the feed then reshuffles and keeps going. The shuffle icon in the view's header starts a fresh deck. Works on mobile: add the command to the mobile toolbar, or find the shuffle icon in the left sidebar.
 
+With a keyboard, the feed takes vim-style keys whenever it's the focused pane: `j`/`k` scroll a few lines, `d`/`u` (or `Ctrl-d`/`Ctrl-u`) half a page, `J`/`K` snap to the next/previous note, `gg`/`G` jump to the top/bottom of what's loaded, `o` or `Enter` opens the note you're looking at in a new tab, and `r` reshuffles.
+
 In **Settings → Factotum → Reflection feed** you can list **excluded folders** (templates, attachments, whatever isn't worth re-reading — subfolders are excluded with them), set a **minimum note length** so empty stubs are skipped (default 40 characters of body text, frontmatter ignored), and adjust how many **notes per load** are drawn at a time.
 
 ### Scroll offset (nvim-style scrolloff)
