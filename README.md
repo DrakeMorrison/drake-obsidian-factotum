@@ -110,6 +110,16 @@ Indented lines beneath a bullet — sub-tasks, nested checkboxes, or continuatio
 
 After ranking, `Sketch the UI` and `Pick the stack` stay under `Build the side project` wherever it lands.
 
+### Reflection feed: scroll random notes instead of a timeline
+
+> **Factotum: Open reflection feed (scroll random notes)** — or click the shuffle icon in the ribbon
+
+Opens a tab that's an endless, read-only scroll of random notes from your vault — a vault-flavored stand-in for the infinite feeds elsewhere, for the moments you'd otherwise reach for one. Each note is rendered in reading mode right there in the feed; scroll toward the bottom and the next few are drawn automatically, so there's no button to press between notes. Long notes are clipped with a **Read more** button that expands them in place. Tap a note's title to open it properly (in a new tab), and wiki links inside the rendered text work as usual.
+
+Notes are dealt from a shuffled deck, so nothing repeats until every note has been shown once — the feed then reshuffles and keeps going. The shuffle icon in the view's header starts a fresh deck. Works on mobile: add the command to the mobile toolbar, or find the shuffle icon in the left sidebar.
+
+In **Settings → Factotum → Reflection feed** you can list **excluded folders** (templates, attachments, whatever isn't worth re-reading — subfolders are excluded with them), set a **minimum note length** so empty stubs are skipped (default 40 characters of body text, frontmatter ignored), and adjust how many **notes per load** are drawn at a time.
+
 ### Scroll offset (nvim-style scrolloff)
 
 Keeps a margin of context lines above and below the cursor while editing, so you're never writing against the very top or bottom edge of the window — the view scrolls a little ahead of you, the way Vim's `scrolloff` does.

@@ -1421,6 +1421,11 @@ function totalActiveItems(parsed) {
 const DEFAULT_SETTINGS = {
     todoNotePath: '',               // note that "Add new item" targets; blank = active note
     scrollOff: 10,                  // min lines of context kept above/below the cursor (nvim scrolloff); 0 = off
+    reflectionFeed: {
+        excludeFolders: '',        // newline/comma-separated folder paths never shown in the feed
+        minChars: 40,              // notes whose body (sans frontmatter) is shorter are skipped
+        batchSize: 4,              // notes rendered per scroll-triggered load
+    },
     beeminder: {
         enabled: false,
         authToken: '',
@@ -1712,6 +1717,224 @@ const REVIEW_KINDS = {
                sourceLadder: ['week', 'month', 'quarter', 'year', 'decade'] },
 };
 
+// ── Reflection feed ─────────────────────────────────────────────────────────
+//
+// An infinite, read-only scroll of random notes — a vault-flavored stand-in for
+// doomscrolling. Each card renders one note in reading mode; scrolling near the
+// bottom draws the next few. Notes are dealt from a shuffled deck so nothing
+// repeats until the whole vault has been shown once.
+
+const REFLECTION_FEED_VIEW = 'factotum-reflection-feed';
+
+function shuffleInPlace(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+}
+
+// Folders are matched as path prefixes, so "Templates" also excludes
+// "Templates/Daily". Entries may be separated by newlines or commas.
+function parseFolderList(text) {
+    return (text || '')
+        .split(/[\n,]/)
+        .map(s => s.trim().replace(/^\/+|\/+$/g, ''))
+        .filter(Boolean);
+}
+
+class ReflectionFeedView extends obsidian.ItemView {
+    constructor(leaf, plugin) {
+        super(leaf);
+        this.plugin = plugin;
+        this.deck = [];
+        this.loading = false;
+        this.generation = 0;       // bumped on restart so an in-flight load drops its stale cards
+        this.navigation = false;
+    }
+
+    getViewType()    { return REFLECTION_FEED_VIEW; }
+    getDisplayText() { return 'Reflection feed'; }
+    getIcon()        { return 'shuffle'; }
+
+    async onOpen() {
+        const root = this.contentEl;
+        root.empty();
+        root.addClass('reflection-feed');
+
+        this.addAction('shuffle', 'Reshuffle (start a fresh deck)', () => this.restart());
+
+        this.cardsEl    = root.createDiv('reflection-feed-cards');
+        this.statusEl   = root.createDiv('reflection-feed-status');
+        this.sentinelEl = root.createDiv('reflection-feed-sentinel');
+
+        // Draw the next batch as soon as the sentinel below the last card comes
+        // within a screen or so of view; rootMargin keeps the scroll seamless.
+        this.observer = new IntersectionObserver(entries => {
+            if (entries.some(e => e.isIntersecting)) this.loadMore();
+        }, { root, rootMargin: '800px 0px' });
+        this.observer.observe(this.sentinelEl);
+
+        // Rendered markdown inside a custom view doesn't get Obsidian's link
+        // handling for free, so route wiki-link clicks ourselves.
+        this.registerDomEvent(root, 'click', (evt) => {
+            const a = evt.target?.closest?.('a.internal-link');
+            if (!a) return;
+            evt.preventDefault();
+            evt.stopPropagation();
+            const href = a.dataset.href || a.getAttribute('href');
+            if (!href) return;
+            const sourcePath = a.closest('.reflection-feed-card')?.dataset.path ?? '';
+            this.app.workspace.openLinkText(href, sourcePath, obsidian.Keymap.isModEvent(evt));
+        });
+
+        await this.restart();
+    }
+
+    async onClose() {
+        this.observer?.disconnect();
+        this.observer = null;
+    }
+
+    // ── Deck ──────────────────────────────────────────────────────────────
+
+    candidates() {
+        const s = this.plugin.settings.reflectionFeed;
+        const excluded = parseFolderList(s.excludeFolders);
+        return this.app.vault.getMarkdownFiles().filter(f =>
+            !excluded.some(dir => f.path === dir || f.path.startsWith(dir + '/')));
+    }
+
+    reshuffle() {
+        this.deck = shuffleInPlace(this.candidates());
+        this.dealt = 0;
+        this.deckSize = this.deck.length;
+    }
+
+    // Returns the next note whose body has something worth reading, or null
+    // when the vault has nothing that passes the filters.
+    async drawNote() {
+        const minChars = Math.max(0, this.plugin.settings.reflectionFeed.minChars | 0);
+        for (let tries = 0; tries < 200; tries++) {
+            if (this.deck.length === 0) {
+                if (this.dealt === 0) return null;       // nothing passed the filters last round
+                this.reshuffle();
+                if (this.deck.length === 0) return null;
+                this.setStatus('Every note has been shown once — reshuffled.');
+            }
+            const file = this.deck.pop();
+            this.dealt++;
+            if (!(file instanceof obsidian.TFile)) continue;   // deleted since the deck was built
+            const body = this.stripFrontmatter(file, await this.app.vault.cachedRead(file));
+            if (body.trim().length < minChars) continue;
+            return { file, body };
+        }
+        return null;
+    }
+
+    stripFrontmatter(file, content) {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const end = cache?.frontmatterPosition?.end?.offset ?? cache?.frontmatter?.position?.end?.offset;
+        if (end != null) return content.slice(end);
+        const m = content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
+        return m ? content.slice(m[0].length) : content;
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────
+
+    async restart() {
+        this.generation++;
+        this.loading = false;
+        this.reshuffle();
+        this.cardsEl.empty();
+        this.setStatus('');
+        this.contentEl.scrollTop = 0;
+        await this.loadMore();
+    }
+
+    setStatus(text) {
+        this.statusEl.setText(text);
+        this.statusEl.toggleClass('is-empty', !text);
+    }
+
+    async loadMore() {
+        if (this.loading) return;
+        this.loading = true;
+        try {
+            const gen = this.generation;
+            const batch = Math.max(1, this.plugin.settings.reflectionFeed.batchSize | 0);
+            for (let i = 0; i < batch; i++) {
+                const note = await this.drawNote();
+                if (gen !== this.generation) return;     // restarted meanwhile
+                if (!note) {
+                    if (this.cardsEl.childElementCount === 0) {
+                        this.setStatus('No notes to show — check the excluded folders and minimum length in Settings → Factotum → Reflection feed.');
+                    }
+                    return;
+                }
+                await this.renderCard(note.file, note.body, gen);
+                if (gen !== this.generation) return;
+            }
+        } finally {
+            this.loading = false;
+        }
+        // Short notes may leave the sentinel still on screen, and the observer
+        // only fires on *changes* — so keep filling until it's out of view.
+        requestAnimationFrame(() => this.fillIfNeeded());
+    }
+
+    fillIfNeeded() {
+        if (!this.sentinelEl?.isConnected) return;
+        const root = this.contentEl.getBoundingClientRect();
+        if (root.height === 0) return;   // hidden tab: rects are all zero; the observer resumes on reveal
+        const sentinel = this.sentinelEl.getBoundingClientRect();
+        if (sentinel.top < root.bottom + 800) this.loadMore();
+    }
+
+    async renderCard(file, body, gen) {
+        const card = this.cardsEl.createDiv('reflection-feed-card');
+        card.dataset.path = file.path;
+
+        const head = card.createDiv('reflection-feed-card-head');
+        const title = head.createSpan({ cls: 'reflection-feed-card-title', text: file.basename });
+        title.setAttr('aria-label', 'Open this note');
+        title.setAttr('role', 'link');
+        title.addEventListener('click', (evt) => {
+            const mode = obsidian.Keymap.isModEvent(evt) || 'tab';
+            this.app.workspace.getLeaf(mode).openFile(file);
+        });
+        if (file.parent && file.parent.path !== '/') {
+            head.createSpan({ cls: 'reflection-feed-card-path', text: file.parent.path });
+        }
+        head.createSpan({ cls: 'reflection-feed-card-date', text: obsidian.moment(file.stat.mtime).fromNow() });
+
+        const bodyEl = card.createDiv('reflection-feed-card-body markdown-rendered is-collapsed');
+        await this.renderMarkdown(body, bodyEl, file.path);
+        if (gen !== this.generation) { card.remove(); return; }   // restarted while rendering
+
+        // Long notes are clipped with a fade; one tap expands them in place so
+        // the feed stays scannable without hiding anything.
+        if (bodyEl.scrollHeight > bodyEl.clientHeight + 24) {
+            const more = card.createEl('button', { cls: 'reflection-feed-more', text: 'Read more' });
+            more.addEventListener('click', () => {
+                bodyEl.removeClass('is-collapsed');
+                more.remove();
+            });
+        } else {
+            bodyEl.removeClass('is-collapsed');
+        }
+    }
+
+    async renderMarkdown(markdown, el, sourcePath) {
+        const R = obsidian.MarkdownRenderer;
+        if (typeof R.render === 'function') {
+            await R.render(this.app, markdown, el, sourcePath, this);
+        } else {
+            await R.renderMarkdown(markdown, el, sourcePath, this);
+        }
+    }
+}
+
 class DrakeFactotumPlugin extends obsidian.Plugin {
     async onload() {
         await this.loadSettings();
@@ -1871,6 +2094,14 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
             }
         });
 
+        this.registerView(REFLECTION_FEED_VIEW, (leaf) => new ReflectionFeedView(leaf, this));
+        this.addRibbonIcon('shuffle', 'Open reflection feed', () => this.openReflectionFeed());
+        this.addCommand({
+            id: 'factotum-reflection-feed',
+            name: 'Open reflection feed (scroll random notes)',
+            callback: () => this.openReflectionFeed(),
+        });
+
         console.log('Factotum loaded');
     }
 
@@ -1914,10 +2145,23 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
         this.registerEvent(this.app.workspace.on('active-leaf-change', tryRegister));
     }
 
+    // Reuse an open feed if there is one; otherwise open it in a new tab
+    // (on mobile that's a new pane in the tab switcher).
+    async openReflectionFeed() {
+        const { workspace } = this.app;
+        let leaf = workspace.getLeavesOfType(REFLECTION_FEED_VIEW)[0];
+        if (!leaf) {
+            leaf = workspace.getLeaf('tab');
+            await leaf.setViewState({ type: REFLECTION_FEED_VIEW, active: true });
+        }
+        workspace.revealLeaf(leaf);
+    }
+
     async loadSettings() {
         const data = await this.loadData();
         this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
         this.settings.beeminder = Object.assign({}, DEFAULT_SETTINGS.beeminder, data?.beeminder);
+        this.settings.reflectionFeed = Object.assign({}, DEFAULT_SETTINGS.reflectionFeed, data?.reflectionFeed);
         this.settings.anthropic = Object.assign({}, DEFAULT_SETTINGS.anthropic, data?.anthropic);
         this.settings.weeklyReview = Object.assign({}, DEFAULT_SETTINGS.weeklyReview, data?.weeklyReview);
         this.settings.monthlyReview = Object.assign({}, DEFAULT_SETTINGS.monthlyReview, data?.monthlyReview);
@@ -2481,6 +2725,57 @@ class FactotumSettingTab extends obsidian.PluginSettingTab {
                     });
                 t.inputEl.type = 'number';
                 t.inputEl.min = '0';
+            });
+
+        const rf = this.plugin.settings.reflectionFeed;
+
+        new obsidian.Setting(containerEl)
+            .setName('Reflection feed')
+            .setHeading();
+
+        containerEl.createEl('p', {
+            text: 'An endless, read-only scroll of random notes from your vault — open it with the shuffle ribbon icon or the "Open reflection feed" command. Scroll to draw more; no note repeats until every note has been shown once.',
+            cls: 'ordinal-hint',
+        });
+
+        new obsidian.Setting(containerEl)
+            .setName('Excluded folders')
+            .setDesc('Folders never shown in the feed, one per line (subfolders are excluded too) — e.g. Templates, Attachments.')
+            .addTextArea(t => {
+                t.setPlaceholder('Templates\nAttachments')
+                    .setValue(rf.excludeFolders)
+                    .onChange(async (v) => { rf.excludeFolders = v; await this.plugin.saveSettings(); });
+                t.inputEl.rows = 3;
+            });
+
+        new obsidian.Setting(containerEl)
+            .setName('Minimum note length')
+            .setDesc('Skip notes whose body (ignoring frontmatter) is shorter than this many characters, so empty stubs don\'t clutter the feed.')
+            .addText(t => {
+                t.setPlaceholder('40')
+                    .setValue(String(rf.minChars))
+                    .onChange(async (v) => {
+                        const n = Math.floor(Number(v));
+                        rf.minChars = Number.isFinite(n) && n >= 0 ? n : 0;
+                        await this.plugin.saveSettings();
+                    });
+                t.inputEl.type = 'number';
+                t.inputEl.min = '0';
+            });
+
+        new obsidian.Setting(containerEl)
+            .setName('Notes per load')
+            .setDesc('How many notes are drawn each time you near the bottom of the feed.')
+            .addText(t => {
+                t.setPlaceholder('4')
+                    .setValue(String(rf.batchSize))
+                    .onChange(async (v) => {
+                        const n = Math.floor(Number(v));
+                        rf.batchSize = Number.isFinite(n) && n >= 1 ? n : 4;
+                        await this.plugin.saveSettings();
+                    });
+                t.inputEl.type = 'number';
+                t.inputEl.min = '1';
             });
 
         const b = this.plugin.settings.beeminder;
