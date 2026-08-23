@@ -234,9 +234,11 @@ body.is-mobile .modal.ordinal-modal {
 }
 
 .reflection-feed-cards {
-    max-width: var(--file-line-width, 700px);
-    margin: 0 auto;
-    padding: 16px 16px 0;
+    /* Fill the pane rather than capping at the reading-view line width: on
+       desktop the feed uses whatever width the tab has; on mobile that's the
+       screen. Text wraps to the card, so nothing is fixed to a mobile width. */
+    width: 100%;
+    padding: 16px 20px 0;
 }
 
 .reflection-feed-card {
@@ -318,8 +320,6 @@ body.is-mobile .modal.ordinal-modal {
 }
 
 .reflection-feed-status {
-    max-width: var(--file-line-width, 700px);
-    margin: 0 auto;
     padding: 8px 16px 16px;
     text-align: center;
     font-size: 0.8em;
