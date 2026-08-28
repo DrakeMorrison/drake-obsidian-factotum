@@ -6,8 +6,8 @@ var obsidian = require('obsidian');
 
 const QUADRANTS = [
     { key: 'Q1', heading: 'Do — Urgent & Important',          urgent: true,  important: true  },
-    { key: 'Q2', heading: 'Schedule — Important, Not Urgent', urgent: false, important: true  },
     { key: 'Q3', heading: 'Delegate — Urgent, Not Important', urgent: true,  important: false },
+    { key: 'Q2', heading: 'Schedule — Important, Not Urgent', urgent: false, important: true  },
     { key: 'Q4', heading: 'Delete — Neither',                 urgent: false, important: false },
 ];
 const DONE_HEADING = 'Done';
@@ -349,7 +349,7 @@ function serializeMatrix(originalContent, sections) {
 // The inverse of serializeMatrix: flatten a matrix note back into a single
 // ranked list, in the same canonical layout — Inbox still at the top, the
 // list under TODO, Done still at the bottom. Quadrant order becomes list
-// order — Do, then Schedule, then Delegate, then Delete — with each
+// order — Do, then Delegate, then Schedule, then Delete — with each
 // quadrant's internal ranking intact. Done items keep their checkboxes (and
 // the #urgent/#important tags they picked up in the matrix, so the
 // classification survives a round-trip).

@@ -86,7 +86,7 @@ To collapse a matrix note back into one prioritized list:
 
 > **Factotum: Convert Eisenhower matrix back to flat list**
 
-The quadrant headings disappear and their items become a single ranked list — **Do** first, then **Schedule**, then **Delegate**, then **Delete** — with each quadrant's internal order intact. The note's layout is untouched: the Inbox stays at the top, the list sits under `## TODO`, and `## Done` stays at the bottom with checkboxes and quadrant tags intact. No questions asked; it's deterministic, and `Ctrl/Cmd+Z` undoes it.
+The quadrant headings disappear and their items become a single ranked list — **Do** first, then **Delegate**, then **Schedule**, then **Delete** — with each quadrant's internal order intact. The note's layout is untouched: the Inbox stays at the top, the list sits under `## TODO`, and `## Done` stays at the bottom with checkboxes and quadrant tags intact. No questions asked; it's deterministic, and `Ctrl/Cmd+Z` undoes it.
 
 ### Done items remember their quadrant
 
@@ -205,11 +205,11 @@ A matrix note follows the same shape, with the quadrants nested under `## TODO`:
 ### Do — Urgent & Important
 - [ ] File taxes
 
-### Schedule — Important, Not Urgent
-- Learn Spanish
-
 ### Delegate — Urgent, Not Important
 - Book flights
+
+### Schedule — Important, Not Urgent
+- Learn Spanish
 
 ### Delete — Neither
 - Reorganize the sock drawer
