@@ -1667,8 +1667,9 @@ async function callClaude(apiKey, model, system, userContent) {
 }
 
 // System prompt shared by all the periodic reviews; `k` is a REVIEW_KINDS
-// entry and `sourceDesc` names the input granularity ('daily notes' or e.g.
-// 'weekly reviews' when a long span fell back to prior review notes).
+// entry and `sourceDesc` names the input granularities ('daily notes', or
+// e.g. 'weekly reviews and daily notes' when a long span consolidated its
+// oldest days into prior review notes).
 function reviewSystem(k, sourceDesc, hasGoals) {
     let s =
         `You are writing a ${k.adjLabel} review from a user's Obsidian ${sourceDesc}. ` +
@@ -1683,7 +1684,8 @@ function reviewSystem(k, sourceDesc, hasGoals) {
             `this ${k.noun}, grounded in what the notes show. One question per goal, no more, no fewer. `;
     }
     if (sourceDesc !== 'daily notes') {
-        s += 'The inputs are previously generated periodic review notes; synthesize across them rather than repeating any single one. ';
+        s += 'Sections headed as reviews (e.g. "Weekly Review — …") are previously generated periodic review notes standing in for the older part of the span at coarser granularity; ' +
+            'synthesize across all the inputs — treat the reviews as equal evidence to the daily notes, and do not let the finer-grained recent days dominate the whole. ';
     }
     s += 'Do not invent events that are not supported by the notes.';
     return s;
@@ -1702,9 +1704,10 @@ const REVIEW_INPUT_CHAR_BUDGET = REVIEW_INPUT_TOKEN_BUDGET * 4;
 // (see periodStart/addPeriods). `stampFormat` — or the `stamp` function, for
 // spans moment can't format — names the review note and the data.json
 // done-marker. `adjLabel` is the adjective for prose ("weekly review",
-// "decade review"). `sourceLadder` lists coarser input granularities tried,
-// finest first, when the span's daily notes exceed the context budget; kinds
-// without it read daily notes only.
+// "decade review"). `sourceLadder` lists the coarser granularities, finest
+// first, that the span's oldest content is consolidated into when the daily
+// notes exceed the context budget (see collectLadderSections); kinds without
+// it read daily notes only.
 const REVIEW_KINDS = {
     week:    { noun: 'week',    adjLabel: 'weekly',    unit: 'isoWeek', addUnit: 'week',    settingsKey: 'weeklyReview',    stampField: 'lastReviewWeekstamp',    stampFormat: 'GGGG-[W]WW', title: 'Weekly Review' },
     month:   { noun: 'month',   adjLabel: 'monthly',   unit: 'month',   addUnit: 'month',   settingsKey: 'monthlyReview',   stampField: 'lastReviewMonthstamp',   stampFormat: 'YYYY-MM',    title: 'Monthly Review' },
@@ -2526,85 +2529,123 @@ class DrakeFactotumPlugin extends obsidian.Plugin {
         }
     }
 
-    // The `### <day>` sections Claude reads: one per existing, non-empty daily
-    // note from `startM` through `lastM` (inclusive). Stops reading once the
-    // running size passes `budgetChars` and reports `over: true` so the caller
-    // can fall back to a coarser granularity — a century's daily rung is
-    // ~36,500 dates, so walk one mutating moment rather than an array of them.
-    async collectDailySections(config, startM, lastM, budgetChars = Infinity) {
-        const sections = [];
-        let chars = 0;
-        const d = startM.clone();
-        const last = lastM.clone().startOf('day');
-        while (d.isSameOrBefore(last)) {
-            const file = this.app.vault.getAbstractFileByPath(dailyNotePath(config, d));
-            if (file instanceof obsidian.TFile) {
-                const body = stripFrontmatter(await this.app.vault.cachedRead(file)).trim();
-                if (body) {
-                    const section = `### ${d.format('dddd, YYYY-MM-DD')}\n${body}`;
-                    chars += section.length + 2;
-                    if (chars > budgetChars) return { sections, over: true };
-                    sections.push(section);
-                }
-            }
-            d.add(1, 'day');
-        }
-        return { sections, over: false };
-    }
-
-    // `### <stamp>` sections from another kind's already-generated review notes
-    // covering [spanStart .. lastDay]. Enumerates every period of `sourceKind`
-    // overlapping the span and reads the canonical (un-suffixed) note in that
-    // kind's configured folder — even if that kind is disabled, since notes
-    // may exist from past or manual runs. The period containing the span start
-    // is included whole (the ISO week holding a decade's Jan 1 can reach a few
+    // The review's input: daily notes, with the oldest content consolidated
+    // into already-generated review notes when the whole span won't fit the
+    // context budget. Rather than switching the entire span to weekly reviews
+    // at once, only as much of the past as the budget requires is coarsened —
+    // the oldest week of daily notes is replaced by its weekly review, then
+    // the next-oldest, and (for long spans) the oldest weeks escalate to
+    // monthly, quarterly, … reviews (k.sourceLadder, finest first). The
+    // result reads oldest-and-coarsest to newest-and-finest: e.g. a decade as
+    // yearly reviews, then recent monthlies, then the last months day by day.
+    //
+    // Review notes are read from their kinds' configured folders even if the
+    // kind is disabled (notes may exist from past or manual runs). Sizes are
+    // first estimated from stat metadata (body + frontmatter — a safe
+    // overestimate) so planning doesn't read the whole span; the read pass
+    // enforces the budget on real sizes and truncates (keeping the
+    // chronological head) if even the coarsest mix overflows. A consolidated
+    // period whose review note doesn't exist drops out of the input — the
+    // finer notes it replaced no longer fit anyway. Boundary periods are
+    // included whole (the ISO week holding a decade's Jan 1 reaches a few
     // days into the prior decade — harmless, and simpler than clipping).
-    async collectReviewSections(sourceKind, spanStart, lastDay, budgetChars = Infinity) {
-        const gk = REVIEW_KINDS[sourceKind];
-        const folder = this.settings[gk.settingsKey].folder;
-        const sections = [];
-        let chars = 0;
-        let m = periodStart(gk, spanStart);
-        while (m.isSameOrBefore(lastDay)) {
-            const stamp = periodStampOf(gk, m);
-            const file = this.app.vault.getAbstractFileByPath(reviewNotePath(folder, stamp));
-            if (file instanceof obsidian.TFile) {
-                const body = stripFrontmatter(await this.app.vault.cachedRead(file)).trim();
-                if (body) {
-                    const section = `### ${stamp}\n${body}`;
-                    chars += section.length + 2;
-                    if (chars > budgetChars) return { sections, over: true };
-                    sections.push(section);
-                }
-            }
-            m = addPeriods(gk, m, 1);
-        }
-        return { sections, over: false };
-    }
-
-    // The review's input, at the finest granularity that fits the context
-    // budget: daily notes first, then each coarser rung of k.sourceLadder
-    // (weekly reviews, monthly, …). Empty rungs are skipped; if every
-    // non-empty rung overflows, the last one is used truncated at the budget
-    // (chronological head). `sections` is empty if no source notes exist at
-    // any granularity.
+    // `sections` is empty if no source notes exist at any granularity.
     async collectLadderSections(kind, config, spanStart, lastDay) {
         const k = REVIEW_KINDS[kind];
         const rungs = ['day', ...(k.sourceLadder || [])];
-        let lastOverflow = null;
-        for (const rung of rungs) {
-            const label = rung === 'day' ? 'daily notes' : `${REVIEW_KINDS[rung].adjLabel} reviews`;
-            const { sections, over } = rung === 'day'
-                ? await this.collectDailySections(config, spanStart, lastDay, REVIEW_INPUT_CHAR_BUDGET)
-                : await this.collectReviewSections(rung, spanStart, lastDay, REVIEW_INPUT_CHAR_BUDGET);
-            if (over) { lastOverflow = { sections, label }; continue; }
-            if (sections.length > 0) return { sections, sourceLabel: label };
+
+        // Metadata pass: one entry per existing daily note in the span,
+        // oldest first — a century's daily rung is ~36,500 dates, so walk one
+        // mutating moment rather than an array of them. `est` approximates
+        // the section's size without reading the file.
+        const entries = [];
+        {
+            const d = spanStart.clone().startOf('day');
+            const last = lastDay.clone().startOf('day');
+            while (d.isSameOrBefore(last)) {
+                const file = this.app.vault.getAbstractFileByPath(dailyNotePath(config, d));
+                if (file instanceof obsidian.TFile) {
+                    entries.push({ rung: 'day', start: d.clone(), file, est: file.stat.size + 40 });
+                }
+                d.add(1, 'day');
+            }
         }
-        if (lastOverflow) {
-            console.warn(`Factotum — ${kind} review input exceeds the context budget at every granularity; truncating the ${lastOverflow.label}.`);
-            return { sections: lastOverflow.sections, sourceLabel: lastOverflow.label };
+
+        // Consolidate until the estimated total fits, always taking the
+        // oldest entry of the finest granularity still present: every day
+        // becomes part of its weekly review before any week escalates to a
+        // month, and so on up the ladder. Entries stay sorted by start date,
+        // and because each level is consumed from its old end, granularity is
+        // monotonic — coarsest at the far end of the span, finest nearest the
+        // present.
+        let total = entries.reduce((n, e) => n + e.est, 0);
+        let missing = 0;
+        while (total > REVIEW_INPUT_CHAR_BUDGET && entries.length > 0) {
+            let fi = rungs.length - 1, i = -1;
+            for (let j = 0; j < entries.length; j++) {
+                const r = rungs.indexOf(entries[j].rung);
+                if (r < fi) { fi = r; i = j; }
+            }
+            if (i < 0) break; // everything already coarsest — truncate below
+            const head = entries[i];
+            const nk = REVIEW_KINDS[rungs[fi + 1]];
+            // Don't let the target period reach before the span, or back into
+            // territory the previous (coarser) entry already covers.
+            let floor = spanStart;
+            if (i > 0) {
+                const prevEnd = addPeriods(REVIEW_KINDS[entries[i - 1].rung], entries[i - 1].start, 1);
+                if (prevEnd.isAfter(floor)) floor = prevEnd;
+            }
+            const anchor = head.start.isBefore(floor) ? floor : head.start;
+            const P = periodStart(nk, anchor);
+            const Pend = addPeriods(nk, P, 1);
+            while (entries.length > i && entries[i].start.isBefore(Pend)) {
+                total -= entries[i].est;
+                entries.splice(i, 1);
+            }
+            const stamp = periodStampOf(nk, P);
+            const file = this.app.vault.getAbstractFileByPath(reviewNotePath(this.settings[nk.settingsKey].folder, stamp));
+            if (file instanceof obsidian.TFile) {
+                const e = { rung: rungs[fi + 1], start: P, stamp, file, est: file.stat.size + 40 };
+                entries.splice(i, 0, e);
+                total += e.est;
+            } else {
+                missing++;
+            }
         }
-        return { sections: [], sourceLabel: 'daily notes' };
+        if (missing > 0) {
+            console.warn(`Factotum — ${kind} review: ${missing} consolidated period(s) had no review note to stand in for their notes; those parts of the span are omitted.`);
+        }
+
+        // Read pass: build the sections in chronological order, enforcing the
+        // budget on real (frontmatter-stripped) sizes.
+        const sections = [];
+        const used = new Set();
+        let chars = 0;
+        for (const e of entries) {
+            const body = stripFrontmatter(await this.app.vault.cachedRead(e.file)).trim();
+            if (!body) continue;
+            const heading = e.rung === 'day'
+                ? `### ${e.start.format('dddd, YYYY-MM-DD')}`
+                : `### ${REVIEW_KINDS[e.rung].title} — ${e.stamp}`;
+            const section = `${heading}\n${body}`;
+            chars += section.length + 2;
+            if (chars > REVIEW_INPUT_CHAR_BUDGET) {
+                console.warn(`Factotum — ${kind} review input exceeds the context budget even fully consolidated; truncating.`);
+                break;
+            }
+            sections.push(section);
+            used.add(e.rung);
+        }
+
+        // 'quarterly reviews, weekly reviews, and daily notes' — coarsest
+        // first, matching the chronological order of the sections.
+        const parts = rungs.slice().reverse().filter(r => used.has(r))
+            .map(r => r === 'day' ? 'daily notes' : `${REVIEW_KINDS[r].adjLabel} reviews`);
+        const sourceLabel = parts.length > 1
+            ? parts.slice(0, -1).join(', ') + (parts.length > 2 ? ', and ' : ' and ') + parts[parts.length - 1]
+            : (parts[0] || 'daily notes');
+        return { sections, sourceLabel };
     }
 
     // `recordStamp: false` is for reviews of long-past periods: they must not
@@ -2966,7 +3007,7 @@ class FactotumSettingTab extends obsidian.PluginSettingTab {
                 .setHeading();
 
             const ladderHint = k.sourceLadder
-                ? ` A full ${k.noun} of daily notes usually exceeds Claude's context window, so it automatically falls back to the finest review notes that fit — ${k.sourceLadder.map(r => REVIEW_KINDS[r].adjLabel).join(', then ')} reviews, read from those reviews' configured folders.`
+                ? ` A full ${k.noun} of daily notes usually exceeds Claude's context window, so as many recent daily notes are kept as fit and the older remainder is consolidated into already-written review notes — ${k.sourceLadder.map(r => REVIEW_KINDS[r].adjLabel).join(', then ')} reviews, coarser the farther back they reach — read from those reviews' configured folders.`
                 : '';
             containerEl.createEl('p', {
                 text: `Just after ${ui.when}, summarize the past ${k.noun}'s daily notes with Claude and write a review note (AI summary, then one review question per goal) to your chosen folder. If the app was closed at the time — including on mobile, where it runs when you next open Obsidian — it catches up on the next open.${ladderHint}`,
